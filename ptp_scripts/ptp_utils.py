@@ -187,20 +187,24 @@ def text2image_ldm_stable(
 
 
 def register_attention_control(model, controller, center_row_rm, center_col_rm, target_height, target_width, width, height, top=None, left=None, bottom=None, right=None, inject_bg=False, segmentation_map=None, pseudo_cross=False): 
-    def ca_forward(self, place_in_unet):
+    def ca_forward(self, place_in_unet): # Abel: what is "self" in this case?
         def forward(x, context=None, mask=None, encode=False, controller_for_inject=None, inject=False, layernum=None, main_height=None, main_width=None):
 
             is_cross = context is not None
             h = self.heads
 
             q = self.to_q(x)
-            context = default(context, x)
+            context = default(context, x) 
+            # Abel: context = x since the input context=None
+            # the input context seems to always be None (I guess it's just copied from https://github.com/google/prompt-to-prompt/blob/8186230a8ece64c2953271659aa858ec6d02a5cf/ptp_utils.py#L64)
             k = self.to_k(context)
             v = self.to_v(context)
 
             q, k, v = map(lambda t: rearrange(t, 'b n (h d) -> (b h) n d', h=h), (q, k, v))
+            # attention weights
             sim = einsum('b i d, b j d -> b i j', q, k) * self.scale
-                        
+
+            # mask seems to always be None, just ignore the following section
             if exists(mask):
                 mask = rearrange(mask, 'b ... -> b (...)')
                 max_neg_value = -torch.finfo(sim.dtype).max
@@ -215,7 +219,8 @@ def register_attention_control(model, controller, center_row_rm, center_col_rm, 
             
             new_height = bottom_rr - top_rr
             new_width = right_rr - left_rr    
-                
+
+            # why needed the half dimensions?
             step_height2, remainder = divmod(new_height, 2)
             step_height1 = step_height2 + remainder
             step_width2, remainder = divmod(new_width, 2)
@@ -223,15 +228,18 @@ def register_attention_control(model, controller, center_row_rm, center_col_rm, 
 
             center_row = int(center_row_rm * main_height)
             center_col = int(center_col_rm * main_width)
-            
+
+            # why called "pseudo"?
             if pseudo_cross:
                                
                 ref_init = rearrange(x[2], '(h w) c ->1 c h w', h=main_height).contiguous()
+                # for cross-attention, context is finally defined! It's just the reference patch!
                 context = ref_init[:, :, top_rr:bottom_rr, left_rr:right_rr]
-                
+                # flatten the image to 1D
                 context = rearrange(context, '1 c h w ->1 (h w) c').contiguous()
                 context = repeat(context, '1 ... -> b ...', b=2)
-                
+
+                # Abel: don't understand
                 if (sim.shape[1])**0.5 == 32:
                     seg_map = segmentation_map[::2, ::2].clone()
                 elif (sim.shape[1])**0.5 == 16:
@@ -242,6 +250,7 @@ def register_attention_control(model, controller, center_row_rm, center_col_rm, 
                     seg_map = segmentation_map.clone()
                     
                 # record reference location
+                # get indices of the segmented pixels (belonging to the object of interest)
                 ref_loc_masked = []
                 for i in range(bottom_rr - top_rr):
                     for j in range(right_rr - left_rr):
@@ -249,6 +258,7 @@ def register_attention_control(model, controller, center_row_rm, center_col_rm, 
                             ref_loc_masked.append(int(i * (right_rr - left_rr) + j))        
                 ref_loc_masked = torch.tensor((ref_loc_masked), device=x.device)
 
+                # get the actual pixels
                 if len(ref_loc_masked) == 0:
                     masked_context = context
                 else:
@@ -257,16 +267,21 @@ def register_attention_control(model, controller, center_row_rm, center_col_rm, 
                 k = self.to_k(masked_context)
                 v = self.to_v(masked_context)
 
+                # calculate the cross-attention weights
                 k, v = map(lambda t: rearrange(t, 'b n (h d) -> (b h) n d', h=h), (k, v))
                 sim = einsum('b i d, b j d -> b i j', q[int(q.shape[0]/2):], k) * self.scale
-                
+
+                # always None?
                 if exists(mask):
                     mask = rearrange(mask, 'b ... -> b (...)')
                     max_neg_value = -torch.finfo(sim.dtype).max
                     mask = repeat(mask, 'b j -> (b h) () j', h=h)
                     sim.masked_fill_(~mask, max_neg_value)
-                
+
+                # always False?
+                # meaning of encode?
                 if encode == False:
+                    # stores the attention
                     sim = controller(sim, is_cross, place_in_unet)
 
                 sim = sim.softmax(dim=-1)
@@ -276,7 +291,8 @@ def register_attention_control(model, controller, center_row_rm, center_col_rm, 
                 out = torch.cat([out]*2, dim=0)
                 
                 del sim, k, v, masked_context, q, ref_loc_masked, context, ref_init, seg_map, mask
-                
+
+                # get the output (reweighted features)
                 return self.to_out(out)
             
             if encode == False:
