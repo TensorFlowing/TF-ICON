@@ -294,8 +294,9 @@ def register_attention_control(model, controller, center_row_rm, center_col_rm, 
 
                 # get the output (reweighted features)
                 return self.to_out(out)
-            
-            if encode == False:
+
+            # Now outside of "pseudo cross"
+            if encode == False: # encode seems always False
                 sim = controller(sim, is_cross, place_in_unet)
                 
             if inject or inject_bg and is_cross == False:
@@ -326,7 +327,7 @@ def register_attention_control(model, controller, center_row_rm, center_col_rm, 
                 orig_loc = []
                 
                 orig_mask = torch.zeros_like(sim[h:])
-                mask_for_realSA = torch.zeros_like(sim[h:])
+                mask_for_realSA = torch.zeros_like(sim[h:]) #???
 
                 for i_seg, i in enumerate(range(center_row - step_height1, center_row + step_height2)):
                     for j_seg, j in enumerate(range(center_col - step_width1, center_col + step_width2)):
